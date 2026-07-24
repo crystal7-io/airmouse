@@ -1,16 +1,20 @@
 use enigo::{Button, Coordinate, Direction, Enigo, Mouse, Settings};
-use std::sync::Mutex;
 use lazy_static::lazy_static;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 struct AirMouseState {
     enigo: Enigo,
     left_pressed: bool,
     right_pressed: bool,
+    suppress_motion_until: Option<Instant>,
 }
 
 lazy_static! {
     static ref STATE: Mutex<Option<AirMouseState>> = Mutex::new(None);
 }
+
+const CLICK_SUPPRESSION: Duration = Duration::from_millis(30);
 
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
@@ -20,6 +24,7 @@ pub fn init_app() {
             enigo: enigo_instance,
             left_pressed: false,
             right_pressed: false,
+            suppress_motion_until: None,
         });
     }
 }
@@ -37,10 +42,26 @@ pub fn process_ble_payload(payload: Vec<u8>) {
         let left_is_pressed = payload[4] == 1;
         let right_is_pressed = payload[5] == 1;
 
-        if dx != 0 || dy != 0 {
+        // If either button changes state, suppress motion briefly to avoid
+        // accidental drags caused by hand movement while clicking.
+        let left_changed = left_is_pressed != state.left_pressed;
+        let right_changed = right_is_pressed != state.right_pressed;
+
+        if left_changed || right_changed {
+            state.suppress_motion_until =
+                Some(Instant::now() + CLICK_SUPPRESSION);
+        }
+
+        let suppress_motion = state
+            .suppress_motion_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false);
+
+        if !suppress_motion && (dx != 0 || dy != 0) {
             let _ = state.enigo.move_mouse(dx, dy, Coordinate::Rel);
         }
 
+        // Handle left button
         if left_is_pressed && !state.left_pressed {
             let _ = state.enigo.button(Button::Left, Direction::Press);
             state.left_pressed = true;
@@ -49,6 +70,7 @@ pub fn process_ble_payload(payload: Vec<u8>) {
             state.left_pressed = false;
         }
 
+        // Handle right button
         if right_is_pressed && !state.right_pressed {
             let _ = state.enigo.button(Button::Right, Direction::Press);
             state.right_pressed = true;
